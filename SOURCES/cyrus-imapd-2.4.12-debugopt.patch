@@ -1,0 +1,109 @@
+diff -up cyrus-imapd-2.4.12/imap/global.c.debugopt cyrus-imapd-2.4.12/imap/global.c
+--- cyrus-imapd-2.4.12/imap/global.c.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/imap/global.c	2011-11-22 14:24:28.272416643 +0100
+@@ -157,6 +157,10 @@ int cyrus_init(const char *alt_config, c
+ 	/* don't free the openlog() string! */
+     }
+ 
++    /* allow debug logging */
++    if (!config_debug)
++	setlogmask(~LOG_MASK(LOG_DEBUG));
++
+     /* Look up default partition */
+     config_defpartition = config_getstring(IMAPOPT_DEFAULTPARTITION);
+     for (p = (char *)config_defpartition; p && *p; p++) {
+diff -up cyrus-imapd-2.4.12/imap/tls.c.debugopt cyrus-imapd-2.4.12/imap/tls.c
+--- cyrus-imapd-2.4.12/imap/tls.c.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/imap/tls.c	2011-11-22 14:24:28.272416643 +0100
+@@ -255,9 +255,9 @@ static DH *load_dh_param(const char *key
+ 
+     if (ret == NULL) {
+ 	ret = get_dh1024();
+-	syslog(LOG_NOTICE, "imapd:Loading hard-coded DH parameters");
++	syslog(LOG_DEBUG, "imapd:Loading hard-coded DH parameters");
+     } else {
+-	syslog(LOG_NOTICE, "imapd:Loading DH parameters from file");
++	syslog(LOG_DEBUG, "imapd:Loading DH parameters from file");
+     }
+ 
+     if (bio != NULL) BIO_free(bio);
+diff -up cyrus-imapd-2.4.12/lib/imapoptions.debugopt cyrus-imapd-2.4.12/lib/imapoptions
+--- cyrus-imapd-2.4.12/lib/imapoptions.debugopt	2011-11-22 14:24:28.265416615 +0100
++++ cyrus-imapd-2.4.12/lib/imapoptions	2011-11-22 14:24:28.273416647 +0100
+@@ -388,6 +388,9 @@ Blank lines and lines beginning with ``#
+    hashing done on configuration directories.  This is recommended if
+    one partition has a very bushy mailbox tree. */
+ 
++{ "debug", 0, SWITCH }
++/* If enabled, allow syslog() to pass LOG_DEBUG messages. */
++
+ # Commented out - there's no such thing as "hostname_mechs", but we need
+ # this for the man page
+ # { "hostname_mechs", NULL, STRING }
+diff -up cyrus-imapd-2.4.12/lib/libconfig.c.debugopt cyrus-imapd-2.4.12/lib/libconfig.c
+--- cyrus-imapd-2.4.12/lib/libconfig.c.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/lib/libconfig.c	2011-11-22 14:24:28.274416650 +0100
+@@ -84,6 +84,7 @@ int config_auditlog;
+ unsigned config_maxword;
+ unsigned config_maxquoted;
+ int config_qosmarking;
++int config_debug;
+ 
+ /* declared in each binary that uses libconfig */
+ extern const int config_need_data;
+@@ -350,6 +351,9 @@ void config_read(const char *alt_config)
+ 
+     ival = config_getenum(IMAPOPT_QOSMARKING);
+     config_qosmarking = qos[ival];
++
++    /* allow debug logging */
++    config_debug = config_getswitch(IMAPOPT_DEBUG);
+ }
+ 
+ #define GROWSIZE 4096
+diff -up cyrus-imapd-2.4.12/lib/libconfig.h.debugopt cyrus-imapd-2.4.12/lib/libconfig.h
+--- cyrus-imapd-2.4.12/lib/libconfig.h.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/lib/libconfig.h	2011-11-22 14:24:28.274416650 +0100
+@@ -82,6 +82,7 @@ extern int config_auditlog;
+ extern unsigned config_maxquoted;
+ extern unsigned config_maxword;
+ extern int config_qosmarking;
++extern int config_debug;
+ 
+ /* config requirement flags */
+ #define CONFIG_NEED_PARTITION_DATA (1<<0)
+diff -up cyrus-imapd-2.4.12/master/master.c.debugopt cyrus-imapd-2.4.12/master/master.c
+--- cyrus-imapd-2.4.12/master/master.c.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/master/master.c	2011-11-22 14:30:47.243975974 +0100
+@@ -1984,7 +1984,7 @@ int main(int argc, char **argv)
+ 	if(pidlock_fd != -1) close(pidlock_fd);
+     }
+ 
+-    syslog(LOG_NOTICE, "process started");
++    syslog(LOG_DEBUG, "process started");
+ 
+ #if defined(HAVE_UCDSNMP) || defined(HAVE_NETSNMP)
+     /* initialize SNMP agent */
+@@ -2041,7 +2041,7 @@ int main(int argc, char **argv)
+     init_janitor();
+     
+     /* ok, we're going to start spawning like mad now */
+-    syslog(LOG_NOTICE, "ready for work");
++    syslog(LOG_DEBUG, "ready for work");
+ 
+     now = time(NULL);
+     for (;;) {
+diff -up cyrus-imapd-2.4.12/master/masterconf.c.debugopt cyrus-imapd-2.4.12/master/masterconf.c
+--- cyrus-imapd-2.4.12/master/masterconf.c.debugopt	2011-10-04 21:53:03.000000000 +0200
++++ cyrus-imapd-2.4.12/master/masterconf.c	2011-11-22 14:24:28.276416658 +0100
+@@ -99,6 +99,10 @@ int masterconf_init(const char *ident, c
+         /* don't free the openlog() string! */
+     }
+ 
++    /* drop debug messages locally */
++    if (!config_debug)
++	setlogmask(~LOG_MASK(LOG_DEBUG));
++
+     return 0;
+ }
+ 

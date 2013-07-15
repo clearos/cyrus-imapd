@@ -1,0 +1,21 @@
+diff -up cyrus-imapd-2.4.6/cmulocal/berkdb.m4.db4.7 cyrus-imapd-2.4.6/cmulocal/berkdb.m4
+--- cyrus-imapd-2.4.6/cmulocal/berkdb.m4.db4.7	2010-12-20 14:15:49.000000000 +0100
++++ cyrus-imapd-2.4.6/cmulocal/berkdb.m4	2011-02-10 13:43:26.397438481 +0100
+@@ -214,6 +214,7 @@ AC_DEFUN([CYRUS_BERKELEY_DB_CHK_LIB],
+ 
+ 	saved_LIBS=$LIBS
+ 	    for dbname in ${with_bdb} \
++	        db \
+ 	        db-4.8 db4.8 db48 \
+ 	        db-4.7 db4.7 db47 \
+ 	        db-4.6 db4.6 db46 \
+@@ -226,8 +227,7 @@ AC_DEFUN([CYRUS_BERKELEY_DB_CHK_LIB],
+ 	        db-3.3 db3.3 db33 \
+ 	        db-3.2 db3.2 db32 \
+ 	        db-3.1 db3.1 db31 \
+-	        db-3.0 db3.0 db30 db-3 db3 \
+-	        db
++	        db-3.0 db3.0 db30 db-3 db3
+ 	      do
+ 	    LIBS="$saved_LIBS -l$dbname"
+ 	    AC_TRY_LINK([#include <stdio.h>
