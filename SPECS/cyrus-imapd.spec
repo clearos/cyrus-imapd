@@ -1,6 +1,6 @@
 Name: cyrus-imapd
 Version: 2.4.17
-Release: 5%{?dist}
+Release: 7%{?dist}
 
 %define ssl_pem_file %{_sysconfdir}/pki/%{name}/%{name}.pem
 
@@ -468,6 +468,12 @@ fi
 %{_mandir}/man1/*
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 2.4.17-7
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 2.4.17-6
+- Mass rebuild 2013-12-27
+
 * Fri Jul 12 2013 Jan Safranek <jsafrane@redhat.com> - 2.4.17-5
 - Rebuilt for new net-snmp
 
