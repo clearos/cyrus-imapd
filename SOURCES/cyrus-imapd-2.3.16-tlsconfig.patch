@@ -1,0 +1,108 @@
+New settings:
+
+    tls_prefer_server_ciphers: 0
+
+        Prefer the cipher order configured on the server-side.
+
+    tls_versions: ssl2 ssl3 tls1_0 tls1_1 tls1_2
+
+        Disable SSL/TLS protocols not in this list.
+
+diff --git a/imap/tls.c b/imap/tls.c
+index b2cf666..5a626e2 100644
+--- a/imap/tls.c
++++ b/imap/tls.c
+@@ -632,6 +632,7 @@ int     tls_init_serverengine(const char *ident,
+     const char   *s_cert_file;
+     const char   *s_key_file;
+     int    requirecert;
++    int    server_cipher_order;
+     int    timeout;
+ 
+     if (tls_serverengine)
+@@ -663,10 +657,40 @@ int     tls_init_serverengine(const char *ident,
+     };
+ 
+     off |= SSL_OP_ALL;		/* Work around all known bugs */
+-    if (tlsonly) {
+-	off |= SSL_OP_NO_SSLv2;
+-	off |= SSL_OP_NO_SSLv3;
++
++    const char *tls_versions = config_getstring(IMAPOPT_TLS_VERSIONS);
++
++    if (strstr(tls_versions, "ssl2") == NULL || tlsonly) {
++    off |= SSL_OP_NO_SSLv2;
++    }
++
++    if (strstr(tls_versions, "ssl3") == NULL || tlsonly) {
++    off |= SSL_OP_NO_SSLv3;
++    }
++
++    if (strstr(tls_versions, "tls1_2") == NULL) {
++#if (OPENSSL_VERSION_NUMBER >= 0x1000105fL)
++    off |= SSL_OP_NO_TLSv1_2;
++#else
++    syslog(LOG_ERR, "ERROR: TLSv1.2 configured, OpenSSL < 1.0.1e insufficient");
++#endif
+     }
++
++    if (strstr(tls_versions, "tls1_1") == NULL) {
++#if (OPENSSL_VERSION_NUMBER >= 0x1000000fL)
++    off |= SSL_OP_NO_TLSv1_1;
++#else
++    syslog(LOG_ERR, "ERROR: TLSv1.1 configured, OpenSSL < 1.0.0 insufficient");
++#endif
++    }
++    if (strstr(tls_versions, "tls1_0") == NULL) {
++    off |= SSL_OP_NO_TLSv1;
++    }
++
++    server_cipher_order = config_getswitch(IMAPOPT_TLS_PREFER_SERVER_CIPHERS);
++    if (server_cipher_order)
++        off |= SSL_OP_CIPHER_SERVER_PREFERENCE;
++
+     SSL_CTX_set_options(s_ctx, off);
+     SSL_CTX_set_info_callback(s_ctx, (void (*)()) apps_ssl_info_callback);
+ 
+@@ -1196,7 +1220,7 @@ int tls_init_clientengine(int verifydepth,
+ 	return -1;
+     }
+     
+-    c_ctx = SSL_CTX_new(TLSv1_client_method());
++    c_ctx = SSL_CTX_new(SSLv23_client_method());
+     if (c_ctx == NULL) {
+ 	return (-1);
+     };
+diff --git a/imtest/imtest.c b/imtest/imtest.c
+index 01ac72c..50d115d 100644
+--- a/imtest/imtest.c
++++ b/imtest/imtest.c
+@@ -510,7 +510,7 @@ static int tls_init_clientengine(int verifydepth, char *var_tls_cert_file, char
+ 	return IMTEST_FAIL;
+     }
+     
+-    tls_ctx = SSL_CTX_new(TLSv1_client_method());
++    tls_ctx = SSL_CTX_new(SSLv23_client_method());
+     if (tls_ctx == NULL) {
+ 	return IMTEST_FAIL;
+     };
+Index: cyrus-imapd-2.3.16/lib/imapoptions
+===================================================================
+--- cyrus-imapd-2.3.16.orig/lib/imapoptions
++++ cyrus-imapd-2.3.16/lib/imapoptions
+@@ -1288,6 +1288,15 @@ product version in the capabilities */
+    the special use flag "\Drafts" added.  Later versions of Cyrus
+    have a much more flexible RFC 6154 compatible system.  */
+ 
++{ "tls_prefer_server_ciphers", 0, SWITCH }
++/* Prefer the ciphers on the server side instead of client side */
++
++{ "tls_versions", "ssl2 ssl3 tls1_0 tls1_1 tls1_2", STRING }
++/* A list of SSL/TLS versions to not disable. Cyrus IMAP SSL/TLS starts
++   with all protocols, and substracts protocols not in this list. Newer
++   versions of SSL/TLS will need to be added here to allow them to get
++   disabled. */
++
+ /*
+ .SH SEE ALSO
+ .PP

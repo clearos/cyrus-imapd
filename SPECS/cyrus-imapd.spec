@@ -1,6 +1,6 @@
 Name: cyrus-imapd
 Version: 2.4.17
-Release: 7%{?dist}
+Release: 8%{?dist}
 
 %define ssl_pem_file %{_sysconfdir}/pki/%{name}/%{name}.pem
 
@@ -39,6 +39,9 @@ Patch6: cyrus-imapd-2.3.12p2-current-db.patch
 
 # for c-i <= 2.4.12
 Patch8: cyrus-imapd-2.4.12-debugopt.patch
+# https://bugzilla.redhat.com/show_bug.cgi?id=1196210
+# https://access.redhat.com/security/cve/CVE-2014-3566
+Patch9: cyrus-imapd-2.3.16-tlsconfig.patch
 
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
@@ -117,6 +120,7 @@ one running the server.
 %patch4 -p1 -b .authid_normalize
 %patch6 -p1 -b .libdb
 %patch8 -p1 -b .debugopt
+%patch9 -p1
 
 install -m 644 %{SOURCE11} doc/
 
@@ -468,6 +472,9 @@ fi
 %{_mandir}/man1/*
 
 %changelog
+* Thu Mar 19 2015 Pavel Šimerda <psimerda@redhat.com> - 2.4.17-8
+- Resolves: #1196210 - backport method to disable SSLv3
+
 * Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 2.4.17-7
 - Mass rebuild 2014-01-24
 
