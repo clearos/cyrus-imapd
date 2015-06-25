@@ -43,6 +43,9 @@ Patch8: cyrus-imapd-2.4.12-debugopt.patch
 # https://access.redhat.com/security/cve/CVE-2014-3566
 Patch9: cyrus-imapd-2.3.16-tlsconfig.patch
 
+# ClearOS: add autocreate patch
+Patch100: cyrus-imapd-2.4.4-autocreate-0.10-0.patch
+
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildRequires: autoconf
@@ -121,6 +124,7 @@ one running the server.
 %patch6 -p1 -b .libdb
 %patch8 -p1 -b .debugopt
 %patch9 -p1
+%patch100 -p1 -b .autocreate
 
 install -m 644 %{SOURCE11} doc/
 
@@ -357,6 +361,7 @@ fi
 %{_cyrexecdir}/arbitron
 %{_cyrexecdir}/arbitronsort.pl
 %{_cyrexecdir}/chk_cyrus
+%{_cyrexecdir}/compile_sieve
 %{_cyrexecdir}/convert-sieve.pl
 %{_cyrexecdir}/cyr_df
 %{_cyrexecdir}/ctl_cyrusdb
@@ -472,6 +477,9 @@ fi
 %{_mandir}/man1/*
 
 %changelog
+* Tue Apr 14 2015 ClearFoundation <developer@clearfoundation.com> - 2.4.17-8.clear
+- Added autocreate patch
+
 * Thu Mar 19 2015 Pavel Šimerda <psimerda@redhat.com> - 2.4.17-8
 - Resolves: #1196210 - backport method to disable SSLv3
 
