@@ -2,9 +2,6 @@
 
 Forked version of cyrus-imapd with ClearOS changes applied
 
-## Update usage
-  Add __#kojibuild__ to commit message to automatically build
-
 * git clone git+ssh://git@github.com/clearos/cyrus-imapd.git
 * cd cyrus-imapd
 * git checkout c7
