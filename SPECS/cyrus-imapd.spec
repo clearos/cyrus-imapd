@@ -1,6 +1,6 @@
 Name: cyrus-imapd
 Version: 2.4.17
-Release: 8%{?dist}
+Release: 8%{?dist}.1
 
 %define ssl_pem_file %{_sysconfdir}/pki/%{name}/%{name}.pem
 
@@ -42,6 +42,8 @@ Patch8: cyrus-imapd-2.4.12-debugopt.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=1196210
 # https://access.redhat.com/security/cve/CVE-2014-3566
 Patch9: cyrus-imapd-2.3.16-tlsconfig.patch
+## https://bugzilla.redhat.com/show_bug.cgi?id=1449501
+Patch10: cyrus-imapd-2.4.17-free_body_leak.patch
 
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
@@ -121,6 +123,8 @@ one running the server.
 %patch6 -p1 -b .libdb
 %patch8 -p1 -b .debugopt
 %patch9 -p1
+
+%patch10 -p1
 
 install -m 644 %{SOURCE11} doc/
 
@@ -472,6 +476,9 @@ fi
 %{_mandir}/man1/*
 
 %changelog
+* Wed May 10 2017 Pavel Zhukov <pzhukov@redhat.com> - 2.4.17-8.1
+- Resolves: #1449501 - Fix memory leak in cmd_append
+
 * Thu Mar 19 2015 Pavel Šimerda <psimerda@redhat.com> - 2.4.17-8
 - Resolves: #1196210 - backport method to disable SSLv3
 

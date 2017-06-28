@@ -1,0 +1,23 @@
+diff -up cyrus-imapd-2.4.17/imap/imapd.c.renaud cyrus-imapd-2.4.17/imap/imapd.c
+--- cyrus-imapd-2.4.17/imap/imapd.c.renaud	2017-05-02 16:17:54.000000000 +0200
++++ cyrus-imapd-2.4.17/imap/imapd.c	2017-05-05 09:00:31.000000000 +0200
+@@ -3446,7 +3446,10 @@ void cmd_append(char *tag, char *name, c
+ 				     (const char **) stage[i]->flag,
+ 				     stage[i]->nflags, 0);
+ 	    }
+-	    if (body) message_free_body(body);
++	    if (body) {
++		message_free_body(body);
++		free(body);
++	    }
+ 	}
+ 
+ 	if (!r) {
+@@ -9745,6 +9748,7 @@ struct searchargs *s;
+     freestrlist(s->cc);
+     freestrlist(s->bcc);
+     freestrlist(s->subject);
++    freestrlist(s->messageid);
+     freestrlist(s->body);
+     freestrlist(s->text);
+     freestrlist(s->header_name);
