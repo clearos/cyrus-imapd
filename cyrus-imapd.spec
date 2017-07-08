@@ -81,6 +81,13 @@ Patch16: cyrus-imapd-2.3.16-rh885620.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=963072
 Patch17: cyrus-imapd-2.3.16-rh963072.patch
 
+# ClearOS
+Patch300: cyrus-imapd-kolab-cyradm-annotations.patch
+Patch301: cyrus-imapd-kolab-logging.patch
+Patch302: cyrus-imapd-kolab-folder-names.patch
+Patch303: cyrus-imapd-kolab-uid.patch
+Patch304: cyrus-imapd-kolab-makefile.patch
+
 BuildRoot: %(mktemp -ud %{_tmppath}/%{name}-%{version}-%{release}-XXXXXX)
 
 BuildRequires: autoconf
@@ -169,6 +176,13 @@ one running the server.
 %patch16 -p1
 %patch17 -p1
 
+# ClearOS
+%patch300 -p1
+%patch301 -p1 -b .logging
+%patch302 -p1 -b .folder_names
+%patch303 -p1 -b .uid
+%patch304 -p1 -b .kolab_makefile
+
 install -m 644 %{SOURCE4} %{SOURCE5} %{SOURCE11} doc/
 
 # only to update config.* files
@@ -198,6 +212,8 @@ find . -type f -name "*.pl" -exec chmod 755 {} \;
 CPPFLAGS="$RPM_OPT_FLAGS -I%{_includedir}/et -I%{_includedir}/kerberosIV -fno-strict-aliasing"; export CPPFLAGS
 CFLAGS="$RPM_OPT_FLAGS -fPIC -fno-strict-aliasing"; export CFLAGS
 CCDLFLAGS="-rdynamic"; export CCDLFLAGS
+# ClearFoundation - Kolab patches need LDAP in global.c
+DEPLIBS="-lldap -llber"; export DEPLIBS
 %ifnarch ppc ppc64
 LDFLAGS="$LDFLAGS -pie"; export LDFLAGS
 %endif
@@ -509,6 +525,9 @@ fi
 %{_mandir}/man1/*
 
 %changelog
+* Mon Apr 10 2017 ClearFoundation <developer@clearfoundation.com> - 2.3.16-15.clear
+- apply Kolab patches
+
 * Thu Oct 13 2016 Pavel Šimerda <psimerda@redhat.com> - 2.3.16-15
 - Resolves: #963072 - imapd never close the connect to the client upon the idle
   timeout

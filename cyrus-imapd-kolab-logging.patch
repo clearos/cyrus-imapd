@@ -1,0 +1,39 @@
+Provides improved logging for the cyrus imapd server [Version: 2.3.9]
+
+diff -r e17e42827afc imap/append.c
+--- a/imap/append.c	Wed Dec 23 20:17:41 2009 +0100
++++ b/imap/append.c	Wed Dec 23 20:49:56 2009 +0100
+@@ -654,6 +654,9 @@
+     /* ok, we've successfully added a message */
+     as->quota_used += message_index.size;
+ 
++    syslog(LOG_DEBUG, "append_fromstage: message %d added to %s",
++	   message_index.uid, mailbox->name );
++
+     return 0;
+ }
+ 
+diff -r e17e42827afc imap/imapd.c
+--- a/imap/imapd.c	Wed Dec 23 20:17:41 2009 +0100
++++ b/imap/imapd.c	Wed Dec 23 20:49:56 2009 +0100
+@@ -3638,6 +3638,8 @@
+     if ((cmd[0] == 'C') && (imapd_mailbox->myrights & ACL_EXPUNGE)) {
+ 	if (!mailbox_expunge(imapd_mailbox, NULL, NULL, 0)) {
+ 	    sync_log_mailbox(imapd_mailbox->name);
++	    syslog(LOG_DEBUG, "cmd_expunge: user %s, mailbox %s, sequence %s",
++		   imapd_userid, imapd_mailbox->name, "''");
+ 	}
+     }
+ 
+diff -r e17e42827afc imap/mailbox.c
+--- a/imap/mailbox.c	Wed Dec 23 20:17:41 2009 +0100
++++ b/imap/mailbox.c	Wed Dec 23 20:49:56 2009 +0100
+@@ -2575,6 +2575,8 @@
+ 	*(fname->tail)++ = '/';
+ 	fname->len++;
+ 	for (msgno = 0; msgno < numdeleted; msgno++) {
++	    syslog(LOG_DEBUG, "mailbox_expunge: removing mail %s:%d",
++		   mailbox->name, deleted[msgno]);
+ 	    mailbox_message_get_fname(mailbox, deleted[msgno],
+ 				      fname->tail,
+ 				      sizeof(fname->buf) - fname->len);
