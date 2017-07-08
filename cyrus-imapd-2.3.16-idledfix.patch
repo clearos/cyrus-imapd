@@ -1,0 +1,1341 @@
+diff -up cyrus-imapd-2.3.16/imap/global.c.idledfix cyrus-imapd-2.3.16/imap/global.c
+--- cyrus-imapd-2.3.16/imap/global.c.idledfix	2012-03-28 16:34:37.368926851 +0200
++++ cyrus-imapd-2.3.16/imap/global.c	2012-03-28 16:34:37.394927071 +0200
+@@ -808,17 +808,32 @@ int shutdown_file(char *buf, int size)
+     FILE *f;
+     static char shutdownfilename[1024] = "";
+     char *p;
++    char tmpbuf[1024];
+     
+     if (!shutdownfilename[0])
+ 	snprintf(shutdownfilename, sizeof(shutdownfilename), 
+ 		 "%s/msg/shutdown", config_dir);
+-    if ((f = fopen(shutdownfilename, "r")) == NULL) return 0;
++    f = fopen(shutdownfilename, "r");
++    if (!f) return 0;
+ 
+-    fgets(buf, size, f);
+-    if ((p = strchr(buf, '\r')) != NULL) *p = 0;
+-    if ((p = strchr(buf, '\n')) != NULL) *p = 0;
++    if (!buf) {
++	buf = tmpbuf;
++	size = sizeof(tmpbuf);
++    }
+ 
+-    syslog(LOG_DEBUG, "Shutdown file: %s, closing connection", buf);
++    if (!fgets(buf, size, f)) {
++	*buf = '\0';
++
++	syslog(LOG_DEBUG, "Shutdown file exists with no contents");
++    }
++    else {
++	if ((p = strchr(buf, '\r')) != NULL) *p = 0;
++	if ((p = strchr(buf, '\n')) != NULL) *p = 0;
++
++	syslog(LOG_DEBUG, "Shutdown file: %s, closing connection", buf);
++    }
++    
++    fclose(f);
+ 
+     return 1;
+ }
+diff -up cyrus-imapd-2.3.16/imap/global.h.idledfix cyrus-imapd-2.3.16/imap/global.h
+--- cyrus-imapd-2.3.16/imap/global.h.idledfix	2012-03-28 17:02:46.575642117 +0200
++++ cyrus-imapd-2.3.16/imap/global.h	2012-03-28 17:02:46.588642217 +0200
+@@ -50,6 +50,7 @@
+ #include "auth.h"
+ #include "mboxname.h"
+ #include "signals.h"
++#include "util.h"
+ 
+ /* Flags for cyrus_init() */
+ enum {
+diff -up cyrus-imapd-2.3.16/imap/idle.c.idledfix cyrus-imapd-2.3.16/imap/idle.c
+--- cyrus-imapd-2.3.16/imap/idle.c.idledfix	2009-02-06 14:46:18.000000000 +0100
++++ cyrus-imapd-2.3.16/imap/idle.c	2012-03-28 16:34:37.395927079 +0200
+@@ -55,47 +55,32 @@
+ #endif
+ #include <signal.h>
+ #include <string.h>
++#include <errno.h>
+ 
+ #include "idle.h"
+-#include "idled.h"
++#include "idlemsg.h"
+ #include "global.h"
+ 
+ const char *idle_method_desc = "no";
+ 
+-/* function to report mailbox updates to the client */
+-static idle_updateproc_t *idle_update = NULL;
+-
+ /* how often to poll the mailbox */
+ static time_t idle_period = -1;
+ static int idle_started = 0;
+ 
+ /* UNIX socket variables */
+-static int notify_sock = -1;
+ static struct sockaddr_un idle_remote;
+-static int idle_remote_len = 0;
+ 
+ 
+-/*
+- * Send a message to idled
+- */
+-static int idle_send_msg(int msg, const char *mboxname)
++static int idle_send_msg(int which, const char *mboxname)
+ {
+-    idle_data_t idledata;
++    idle_message_t msg;
+ 
+     /* fill the structure */
+-    idledata.msg = msg;
+-    idledata.pid = getpid();
+-    strncpy(idledata.mboxname, mboxname ? mboxname : ".", sizeof(idledata.mboxname));
++    msg.which = which;
++    strncpy(msg.mboxname, mboxname ? mboxname : ".", sizeof(msg.mboxname));
+ 
+     /* send */
+-    if (sendto(notify_sock, (void *) &idledata,
+-	       IDLEDATA_BASE_SIZE+strlen(idledata.mboxname)+1, /* 1 for NULL */
+-	       0, (struct sockaddr *) &idle_remote, idle_remote_len) == -1) {
+-      syslog(LOG_ERR, "error sending to idled: %x", msg);
+-      return 0;
+-    }
+-
+-    return 1;
++    return idle_send(&idle_remote, &msg);
+ }
+ 
+ /*
+@@ -106,7 +91,7 @@ void idle_notify(const char *mboxname)
+     /* We should try to determine if we need to send this
+      * (ie, is an imapd is IDLE on 'mailbox'?).
+      */
+-    idle_send_msg(IDLE_NOTIFY, mboxname);
++    idle_send_msg(IDLE_MSG_NOTIFY, mboxname);
+ }
+ 
+ /*
+@@ -118,7 +103,7 @@ int idle_enabled(void)
+ 	int s;
+ 	int fdflags;
+ 	struct stat sbuf;
+-	const char *idle_sock;
++	struct sockaddr_un local;
+ 
+ 	/* get polling period in case we can't connect to idled
+ 	 * NOTE: if used, a period of zero disables IDLE
+@@ -130,38 +115,27 @@ int idle_enabled(void)
+ 
+ 	idle_method_desc = "poll";
+ 
+-	if ((s = socket(AF_UNIX, SOCK_DGRAM, 0)) == -1) {
++	if (!idle_make_client_address(&local) ||
++	    !idle_init_sock(&local))
+ 	    return idle_period;
+-	}
++	s = idle_get_sock();
+ 
+-	idle_remote.sun_family = AF_UNIX;
+-	idle_sock = config_getstring(IMAPOPT_IDLESOCKET);
+-	if (idle_sock) {	
+-	    strcpy(idle_remote.sun_path, idle_sock);
+-	}
+-	else {
+-	    strcpy(idle_remote.sun_path, config_dir);
+-	    strcat(idle_remote.sun_path, FNAME_IDLE_SOCK);
+-	}
+-	idle_remote_len = sizeof(idle_remote.sun_family) +
+-	    strlen(idle_remote.sun_path) + 1;
++	if (!idle_make_server_address(&idle_remote))
++	    return idle_period;
+ 
+ 	/* check that the socket exists */
+ 	if (stat(idle_remote.sun_path, &sbuf) < 0) {
+-	    close(s);
++	    idle_done_sock();
+ 	    return idle_period;
+ 	}
+ 
+ 	/* put us in non-blocking mode */
+ 	fdflags = fcntl(s, F_GETFD, 0);
+ 	if (fdflags != -1) fdflags = fcntl(s, F_SETFL, O_NONBLOCK | fdflags);
+-	if (fdflags == -1) { close(s); return idle_period; }
+-
+-	notify_sock = s;
++	if (fdflags == -1) { idle_done_sock(); return idle_period; }
+ 
+-	if (!idle_send_msg(IDLE_NOOP, NULL)) {
+-	    close(s);
+-	    notify_sock = -1;
++	if (!idle_send_msg(IDLE_MSG_NOOP, NULL)) {
++	    idle_done_sock();
+ 	    return idle_period;
+ 	}
+ 
+@@ -172,7 +146,7 @@ int idle_enabled(void)
+ 
+ 	return 1;
+     }
+-    else if (notify_sock != -1) {
++    else if (idle_get_sock() != -1) {
+ 	/* if the idle socket is already open, we're enabled */
+ 	return 1;
+     }
+@@ -181,79 +155,88 @@ int idle_enabled(void)
+     }
+ }
+ 
+-static void idle_handler(int sig)
++void idle_start(const char *mboxname)
+ {
+-    /* ignore the signals, unless the server has started idling */
+-    if (!idle_started) return;
++    idle_started = 1;
+ 
+-    switch (sig) {
+-    case SIGUSR1:
+-	idle_update(IDLE_MAILBOX);
+-	break;
+-    case SIGUSR2:
+-	idle_update(IDLE_ALERT);
+-	break;
+-    case SIGALRM:
+-	idle_update(IDLE_MAILBOX|IDLE_ALERT);
+-	alarm(idle_period);
+-	break;
+-    }
++    /* Tell idled that we're idling.  It doesn't
++     * matter if it fails, we'll still poll */
++    idle_send_msg(IDLE_MSG_INIT, mboxname);
+ }
+ 
+-int idle_init(idle_updateproc_t *proc)
++int idle_wait(int otherfd)
+ {
+-    struct sigaction action;
+-
+-    idle_update = proc;
+-
+-    /* We don't want recursive calls to idle_update() */
+-    sigemptyset(&action.sa_mask);
+-    sigaddset(&action.sa_mask, SIGUSR1);
+-    sigaddset(&action.sa_mask, SIGUSR2);
+-    action.sa_flags = 0;
+-#ifdef SA_RESTART
+-    action.sa_flags |= SA_RESTART;
+-#endif
+-    action.sa_handler = idle_handler;
+-
+-    /* Setup the signal handlers */
+-    if ((sigaction(SIGUSR1, &action, NULL) < 0) ||
+-	(sigaction(SIGUSR2, &action, NULL) < 0) ||
+-	(sigaction(SIGALRM, &action, NULL) < 0)) {
+-	syslog(LOG_ERR, "sigaction: %m");
++    int s = idle_get_sock();
++    fd_set rfds;
++    int maxfd;
++    struct timeval timeout;
++    int r;
++    int flags = 0;
+ 
+-	/* Cancel receiving signals */
+-	idle_done(NULL);
++    if (!idle_started)
+ 	return 0;
+-    }
+ 
+-    return 1;
+-}
++    do {
++	FD_ZERO(&rfds);
++	maxfd = -1;
++	if (s >= 0) {
++	    FD_SET(s, &rfds);
++	    maxfd = MAX(maxfd, s);
++	}
++	if (otherfd >= 0) {
++	    FD_SET(otherfd, &rfds);
++	    maxfd = MAX(maxfd, otherfd);
++	}
+ 
+-void idle_start(const char *mboxname)
+-{
+-    idle_started = 1;
++	/* Note: it's technically valid for there to be no fds to listen
++	 * to, in the case where @otherfd is passed as -1 and we failed
++	 * to talk to idled.  It shouldn't happen though as we're always
++	 * called with a valid otherfd.  */
++
++	/* TODO: this is wrong, we actually want a rolling period */
++	timeout.tv_sec = idle_period;
++	timeout.tv_usec = 0;
++
++	r = select(maxfd+1, &rfds, NULL, NULL, &timeout);
++	if (r < 0) {
++	    if (errno == EAGAIN || errno == EINTR)
++		continue;
++	    syslog(LOG_ERR, "select: %m");
++	    return 0;
++	}
++	if (r == 0) {
++	    /* timeout */
++	    flags |= IDLE_MAILBOX|IDLE_ALERT;
++	}
++	if (r > 0 && s >= 0 && FD_ISSET(s, &rfds)) {
++	    struct sockaddr_un from;
++	    idle_message_t msg;
++
++	    if (idle_recv(&from, &msg)) {
++		switch (msg.which) {
++		case IDLE_MSG_NOTIFY:
++		    flags |= IDLE_MAILBOX;
++		    break;
++		case IDLE_MSG_ALERT:
++		    flags |= IDLE_ALERT;
++		    break;
++		}
++	    }
++	}
++	if (r > 0 && otherfd >= 0 && FD_ISSET(otherfd, &rfds))
++	    flags |= IDLE_INPUT;
++    } while (!flags);
+ 
+-    /* Tell idled that we're idling */
+-    if (notify_sock == -1 || !idle_send_msg(IDLE_INIT, mboxname)) {
+-	/* otherwise, we'll poll with SIGALRM */
+-	alarm(idle_period);
+-    }
++    return flags;
+ }
+ 
+ void idle_done(const char *mboxname)
+ {
+     /* Tell idled that we're done idling */
+-    if (notify_sock != -1) idle_send_msg(IDLE_DONE, mboxname);
+-
+-    /* Cancel alarm */
+-    alarm(0);
++    idle_send_msg(IDLE_MSG_DONE, mboxname);
+ 
+-    /* Remove the signal handlers */
+-    signal(SIGUSR1, SIG_IGN);
+-    signal(SIGUSR2, SIG_IGN);
+-    signal(SIGALRM, SIG_IGN);
++    /* close the AF_UNIX socket */
++    idle_done_sock();
+ 
+-    idle_update = NULL;
+     idle_started = 0;
+ }
+diff -up cyrus-imapd-2.3.16/imap/idled.c.idledfix cyrus-imapd-2.3.16/imap/idled.c
+--- cyrus-imapd-2.3.16/imap/idled.c.idledfix	2009-07-28 04:50:54.000000000 +0200
++++ cyrus-imapd-2.3.16/imap/idled.c	2012-03-28 17:19:25.821860799 +0200
+@@ -47,8 +47,6 @@
+ #endif
+ 
+ #include <sys/types.h>
+-#include <sys/socket.h>
+-#include <sys/un.h>
+ #include <syslog.h>
+ #include <sys/stat.h>
+ #include <stdlib.h>
+@@ -59,12 +57,10 @@
+ #include <signal.h>
+ #include <fcntl.h>
+ 
+-#include "idled.h"
++#include "idlemsg.h"
+ #include "global.h"
+ #include "mboxlist.h"
+ #include "xmalloc.h"
+-#include "xstrlcpy.h"
+-#include "xstrlcat.h"
+ #include "hash.h"
+ #include "exitcodes.h"
+ 
+@@ -77,16 +73,14 @@ extern char *optarg;
+ static int verbose = 0;
+ static int debugmode = 0;
+ static time_t idle_timeout;
++static volatile sig_atomic_t sigquit = 0;
+ 
+ struct ientry {
+-    pid_t pid;
++    struct sockaddr_un remote;
+     time_t itime;
+     struct ientry *next;
+ };
+ static struct hash_table itable;
+-static struct ientry *ifreelist;
+-static int itable_inc = 100;
+-void idle_done(char *mboxname, pid_t pid);
+ 
+ void fatal(const char *msg, int err)
+ {
+@@ -95,7 +89,7 @@ void fatal(const char *msg, int err)
+     syslog(LOG_NOTICE, "exiting");
+ 
+     cyrus_done();
+-    
++
+     exit(err);
+ }
+ 
+@@ -111,44 +105,20 @@ static int mbox_count_cb(void *rockp,
+     return 0;
+ }
+ 
+-/* return a new 'ientry', either from the freelist or by malloc'ing it */
+-static struct ientry *get_ientry(void)
+-{
+-    struct ientry *t;
+-
+-    if (!ifreelist) {
+-	/* create child_table_inc more and add them to the freelist */
+-	struct ientry *n;
+-	int i;
+-
+-	n = xmalloc(itable_inc * sizeof(struct ientry));
+-	ifreelist = n;
+-	for (i = 0; i < itable_inc - 1; i++) {
+-	    n[i].next = n + (i + 1);
+-	}
+-	/* i == child_table_inc - 1, last item in block */
+-	n[i].next = NULL;
+-    }
+-
+-    t = ifreelist;
+-    ifreelist = ifreelist->next;
+-
+-    return t;
+-}
+-
+-/* remove pid from list of those idling on mboxname */
+-void idle_done(char *mboxname, pid_t pid)
++/* remove an ientry from list of those idling on mboxname */
++static void remove_ientry(const char *mboxname,
++			  const struct sockaddr_un *remote)
+ {
+     struct ientry *t, *p = NULL;
+ 
+     t = (struct ientry *) hash_lookup(mboxname, &itable);
+-    while (t && t->pid != pid) {
++    while (t && memcmp(&t->remote, remote, sizeof(*remote))) {
+ 	p = t;
+ 	t = t->next;
+     }
+     if (t) {
+ 	if (!p) {
+-	    /* first pid in the linked list */
++	    /* first ientry in the linked list */
+ 
+ 	    p = t->next; /* remove node */
+ 
+@@ -157,115 +127,130 @@ void idle_done(char *mboxname, pid_t pid
+ 	    hash_insert(mboxname, p, &itable);
+ 	}
+ 	else {
+-	    /* not the first pid in the linked list */
++	    /* not the first ientry in the linked list */
+ 
+ 	    p->next = t->next; /* remove node */
+ 	}
+-	t->next = ifreelist; /* add to freelist */
+-	ifreelist = t;
++	free(t);
+     }
+ }
+ 
+-void process_msg(idle_data_t *idledata)
++
++
++static void process_message(struct sockaddr_un *remote, idle_message_t *msg)
+ {
+     struct ientry *t, *n;
+ 
+-    switch (idledata->msg) {
+-    case IDLE_INIT:
++    switch (msg->which) {
++    case IDLE_MSG_INIT:
+ 	if (verbose || debugmode)
+-	    syslog(LOG_DEBUG, "imapd[%ld]: IDLE_INIT '%s'\n",
+-		   idledata->pid, idledata->mboxname);
++	    syslog(LOG_DEBUG, "imapd[%s]: IDLE_MSG_INIT '%s'\n",
++		   idle_id_from_addr(remote), msg->mboxname);
+ 
+-	/* add pid to list of those idling on mboxname */
+-	t = (struct ientry *) hash_lookup(idledata->mboxname, &itable);
+-	n = get_ientry();
+-	n->pid = idledata->pid;
++	/* add an ientry to list of those idling on mboxname */
++	t = (struct ientry *) hash_lookup(msg->mboxname, &itable);
++	n = (struct ientry *) xzmalloc(sizeof(struct ientry));
++	n->remote = *remote;
+ 	n->itime = time(NULL);
+ 	n->next = t;
+-	hash_insert(idledata->mboxname, n, &itable);
++	hash_insert(msg->mboxname, n, &itable);
+ 	break;
+-	
+-    case IDLE_NOTIFY:
++
++    case IDLE_MSG_NOTIFY:
+ 	if (verbose || debugmode)
+-	    syslog(LOG_DEBUG, "IDLE_NOTIFY '%s'\n", idledata->mboxname);
++	    syslog(LOG_DEBUG, "IDLE_MSG_NOTIFY '%s'\n", msg->mboxname);
+ 
+-	/* send a message to all pids idling on mboxname */
+-	t = (struct ientry *) hash_lookup(idledata->mboxname, &itable);
+-	while (t) {
++	/* send a message to all clients idling on mboxname */
++	t = (struct ientry *) hash_lookup(msg->mboxname, &itable);
++	for ( ; t ; t = n) {
++	    n = t->next;
+ 	    if ((t->itime + idle_timeout) < time(NULL)) {
+ 		/* This process has been idling for longer than the timeout
+ 		 * period, so it probably died.  Remove it from the list.
+ 		 */
+ 		if (verbose || debugmode)
+-		    syslog(LOG_DEBUG, "    TIMEOUT %d\n", t->pid);
++		    syslog(LOG_DEBUG, "    TIMEOUT %s\n", idle_id_from_addr(&t->remote));
+ 
+-		n = t;
+-		t = t->next;
+-		idle_done(idledata->mboxname, n->pid);
++		remove_ientry(msg->mboxname, &t->remote);
+ 	    }
+ 	    else { /* signal process to update */
+ 		if (verbose || debugmode)
+-		    syslog(LOG_DEBUG, "    SIGUSR1 %d\n", t->pid);
++		    syslog(LOG_DEBUG, "    fwd NOTIFY %s\n", idle_id_from_addr(&t->remote));
+ 
+-		kill(t->pid, SIGUSR1);
+-		t = t->next;
++		/* forward the received msg onto our clients */
++		if (!idle_send(&t->remote, msg)) {
++		    if (verbose || debugmode)
++			syslog(LOG_DEBUG, "    forgetting %s\n", idle_id_from_addr(&t->remote));
++		    remove_ientry(msg->mboxname, &t->remote);
++		}
+ 	    }
+ 	}
+ 	break;
+-	
+-    case IDLE_DONE:
++
++    case IDLE_MSG_DONE:
+ 	if (verbose || debugmode)
+-	    syslog(LOG_DEBUG, "imapd[%ld]: IDLE_DONE '%s'\n",
+-		   idledata->pid, idledata->mboxname);
++	    syslog(LOG_DEBUG, "imapd[%s]: IDLE_MSG_DONE '%s'\n",
++		   idle_id_from_addr(remote), msg->mboxname);
+ 
+-	/* remove pid from list of those idling on mboxname */
+-	idle_done(idledata->mboxname, idledata->pid);
++	/* remove client from list of those idling on mboxname */
++	remove_ientry(msg->mboxname, remote);
+ 	break;
+ 
+-    case IDLE_NOOP:
++    case IDLE_MSG_NOOP:
+ 	break;
+-	
++
+     default:
+-	syslog(LOG_ERR, "unrecognized message: %lx", idledata->msg);
++	syslog(LOG_ERR, "unrecognized message: %lx", msg->which);
+ 	break;
+     }
+ }
+ 
+-void idle_alert(char *key __attribute__((unused)),
+-		void *data,
+-		void *rock __attribute__((unused)))
++static void send_alert(char *key,
++			void *data,
++			void *rock __attribute__((unused)))
+ {
+     struct ientry *t = (struct ientry *) data;
++    struct ientry *n;
++    idle_message_t msg;
++
++    msg.which = IDLE_MSG_ALERT;
++    strncpy(msg.mboxname, ".", sizeof(msg.mboxname));
++
++
++    for ( ; t ; t = n) {
++	n = t->next;
+ 
+-    while (t) {
+ 	/* signal process to check ALERTs */
+ 	if (verbose || debugmode)
+-	    syslog(LOG_DEBUG, "    SIGUSR2 %d\n", t->pid);
+-	kill(t->pid, SIGUSR2);
++	    syslog(LOG_DEBUG, "    ALERT %s\n", idle_id_from_addr(&t->remote));
+ 
+-	t = t->next;
++	if (!idle_send(&t->remote, &msg)) {
++	    if (verbose || debugmode)
++		syslog(LOG_DEBUG, "    forgetting %s\n", idle_id_from_addr(&t->remote));
++	    remove_ientry(key, &t->remote);
++	}
+     }
+ }
+ 
++static void sighandler (int sig __attribute__((unused)))
++{
++    sigquit = 1;
++    return;
++}
++
+ int main(int argc, char **argv)
+ {
+-    char shutdownfilename[1024];
+     char *p = NULL;
+     int opt;
+     int nmbox = 0;
+-    int s, len;
++    int s;
+     struct sockaddr_un local;
+-    idle_data_t idledata;
+-    struct sockaddr_un from;
+-    socklen_t fromlen;
+-    mode_t oldumask;
+     fd_set read_set, rset;
+     int nfds;
+     struct timeval timeout;
+     pid_t pid;
+-    int fd;
+     char *alt_config = NULL;
+-    const char *idle_sock;
++    struct sigaction action;
+ 
+     p = getenv("CYRUS_VERBOSE");
+     if (p) verbose = atoi(p) + 1;
+@@ -287,14 +272,14 @@ int main(int argc, char **argv)
+ 
+     /* fork unless we were given the -d option */
+     if (debugmode == 0) {
+-	
++
+ 	pid = fork();
+-	
++
+ 	if (pid == -1) {
+ 	    perror("fork");
+ 	    exit(1);
+ 	}
+-	
++
+ 	if (pid != 0) { /* parent */
+ 	    exit(0);
+ 	}
+@@ -303,10 +288,6 @@ int main(int argc, char **argv)
+ 
+     cyrus_init(alt_config, "idled", 0);
+ 
+-    /* get name of shutdown file */
+-    snprintf(shutdownfilename, sizeof(shutdownfilename), "%s/msg/shutdown",
+-	     config_dir);
+-
+     /* Set inactivity timer (convert from minutes to seconds) */
+     idle_timeout = config_getint(IMAPOPT_TIMEOUT);
+     if (idle_timeout < 30) idle_timeout = 30;
+@@ -320,39 +301,26 @@ int main(int argc, char **argv)
+     mboxlist_close();
+     mboxlist_done();
+ 
+-    /* create idle table -- +1 to avoid a zero value */
+-    construct_hash_table(&itable, nmbox + 1, 1);
+-    ifreelist = NULL;
++    sigemptyset(&action.sa_mask);
+ 
+-    /* create socket we are going to use for listening */
+-    if ((s = socket(AF_UNIX, SOCK_DGRAM, 0)) == -1) {
+-	perror("socket");
+-	cyrus_done();
+-	exit(1);
+-    }
++    action.sa_flags = 0;
++    action.sa_handler = sighandler;
++    if (sigaction(SIGQUIT, &action, NULL) < 0)
++	fatal("unable to install signal handler for SIGQUIT", 1);
++    if (sigaction(SIGINT, &action, NULL) < 0)
++	fatal("unable to install signal handler for SIGINT", 1);
++    if (sigaction(SIGTERM, &action, NULL) < 0)
++	fatal("unable to install signal handler for SIGTERM", 1);
+ 
+-    /* bind it to a local file */
+-    local.sun_family = AF_UNIX;
+-    idle_sock = config_getstring(IMAPOPT_IDLESOCKET);
+-    if (idle_sock) {	
+-	strlcpy(local.sun_path, idle_sock, sizeof(local.sun_path));
+-    }
+-    else {
+-	strlcpy(local.sun_path, config_dir, sizeof(local.sun_path));
+-	strlcat(local.sun_path, FNAME_IDLE_SOCK, sizeof(local.sun_path));
+-    }
+-    unlink(local.sun_path);
+-    len = sizeof(local.sun_family) + strlen(local.sun_path) + 1;
+-
+-    oldumask = umask((mode_t) 0); /* for Linux */
++    /* create idle table -- +1 to avoid a zero value */
++    construct_hash_table(&itable, nmbox + 1, 1);
+ 
+-    if (bind(s, (struct sockaddr *)&local, len) == -1) {
+-	perror("bind");
++    if (!idle_make_server_address(&local) ||
++	!idle_init_sock(&local)) {
+ 	cyrus_done();
+ 	exit(1);
+     }
+-    umask(oldumask); /* for Linux */
+-    chmod(local.sun_path, 0777); /* for DUX */
++    s = idle_get_sock();
+ 
+     /* get ready for select() */
+     FD_ZERO(&read_set);
+@@ -363,12 +331,17 @@ int main(int argc, char **argv)
+ 	int n;
+ 
+ 	/* check for shutdown file */
+-	if ((fd = open(shutdownfilename, O_RDONLY, 0)) != -1) {
++	if (shutdown_file(NULL, 0)) {
+ 	    /* signal all processes to shutdown */
+ 	    if (verbose || debugmode)
+ 		syslog(LOG_DEBUG, "IDLE_ALERT\n");
+ 
+-	    hash_enumerate(&itable, idle_alert, NULL);
++	    hash_enumerate(&itable, send_alert, NULL);
++	    break;
++	}
++	if (sigquit) {
++	    hash_enumerate(&itable, send_alert, NULL);
++	    break;
+ 	}
+ 
+ 	/* timeout for select is 1 second */
+@@ -387,28 +360,20 @@ int main(int argc, char **argv)
+ 	    fatal("select error",-1);
+ 	}
+ 
+-	/* read on unix socket */
++	/* read and process a message */
+ 	if (FD_ISSET(s, &rset)) {
+-	    fromlen = sizeof(from);
+-	    n = recvfrom(s, (void*) &idledata, sizeof(idle_data_t), 0,
+-			 (struct sockaddr *) &from, &fromlen);
+-
+-	    if (n > 0) {
+-		if (n <= IDLEDATA_BASE_SIZE ||
+-		    idledata.mboxname[n - 1 - IDLEDATA_BASE_SIZE] != '\0')
+-		    syslog(LOG_ERR, "Invalid message received, size=%d\n", n);
+-		else 
+-		    process_msg(&idledata);
+-	    }
+-	} else {
+-	    /* log some sort of error */	    
++	    struct sockaddr_un from;
++	    idle_message_t msg;
++
++	    if (idle_recv(&from, &msg))
++		process_message(&from, &msg);
+ 	}
+ 
+     }
+ 
++    idle_done_sock();
+     cyrus_done();
+ 
+-    /* never gets here */      
+     exit(1);
+ }
+ 
+diff -up cyrus-imapd-2.3.16/imap/idled.h.idledfix cyrus-imapd-2.3.16/imap/idled.h
+diff -up cyrus-imapd-2.3.16/imap/idle.h.idledfix cyrus-imapd-2.3.16/imap/idle.h
+--- cyrus-imapd-2.3.16/imap/idle.h.idledfix	2008-03-24 18:09:16.000000000 +0100
++++ cyrus-imapd-2.3.16/imap/idle.h	2012-03-28 16:34:37.396927087 +0200
+@@ -49,8 +49,15 @@
+ extern const char *idle_method_desc;
+ 
+ typedef enum {
++    /* something noteworthy may have happened to the mailbox,
++     * e.g. a delivery, so it needs to be checked */
+     IDLE_MAILBOX =	0x1,
+-    IDLE_ALERT =	0x2
++    /* the shutdownfile may have been written, needing an ALERT reponse
++     * to be sent to any IMAP clients */
++    IDLE_ALERT =	0x2,
++    /* input was detected on the @otherfd, probably because the IMAP
++     * client cancelled the IDLE */
++    IDLE_INPUT =	0x4
+ } idle_flags_t;
+ 
+ typedef void idle_updateproc_t(idle_flags_t flags);
+@@ -59,15 +66,19 @@ typedef void idle_updateproc_t(idle_flag
+ /* Is IDLE enabled?  Can also do initial setup, if necessary */
+ int idle_enabled(void);
+ 
+-/* Setup for IDLE.
+- * 'proc' is a pointer to a function which reports mailbox updates and/or
+- * ALERTs to the client.
+- */
+-int idle_init(idle_updateproc_t *proc);
+-
+ /* Start IDLEing on 'mailbox'. */
+ void idle_start(const char *mboxname);
+ 
++/* Wait for something to happen while IDLEing.  @otherfd is a file
++ * descriptor on which to wait for input; presumably this will be the
++ * fd of the main protstream from the IMAP client.  Returns a mask of
++ * flags indicating what if anything happened, see idle_flags_t, or 0
++ * on error.  If idled is disabled or was not contacted, we fall back
++ * to polling mode and return the flags IDLE_MAILBOX and IDLE_INPUT
++ * periodically.
++ */
++int idle_wait(int otherfd);
++
+ /* Cleanup when IDLE is completed. */
+ void idle_done(const char *mboxname);
+ 
+diff -up cyrus-imapd-2.3.16/imap/idlemsg.c.idledfix cyrus-imapd-2.3.16/imap/idlemsg.c
+--- cyrus-imapd-2.3.16/imap/idlemsg.c.idledfix	2012-03-28 16:34:37.396927087 +0200
++++ cyrus-imapd-2.3.16/imap/idlemsg.c	2012-03-28 16:34:37.396927087 +0200
+@@ -0,0 +1,202 @@
++/*
++ * Copyright (c) 1994-2012 Carnegie Mellon University.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. The name "Carnegie Mellon University" must not be used to
++ *    endorse or promote products derived from this software without
++ *    prior written permission. For permission or any legal
++ *    details, please contact
++ *      Carnegie Mellon University
++ *      Center for Technology Transfer and Enterprise Creation
++ *      4615 Forbes Avenue
++ *      Suite 302
++ *      Pittsburgh, PA  15213
++ *      (412) 268-7393, fax: (412) 268-7395
++ *      innovation@andrew.cmu.edu
++ *
++ * 4. Redistributions of any form whatsoever must retain the following
++ *    acknowledgment:
++ *    "This product includes software developed by Computing Services
++ *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
++ *
++ * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
++ * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
++ * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
++ * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
++ * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
++ * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ *
++ * $Id: idle.c,v 1.7 2010/01/06 17:01:32 murch Exp $
++ */
++
++#include <config.h>
++
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <sys/un.h>
++#include <syslog.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <syslog.h>
++#ifdef HAVE_UNISTD_H
++#include <unistd.h>
++#endif
++#include <signal.h>
++#include <string.h>
++
++#include "assert.h"
++#include "xstrlcpy.h"
++#include "xstrlcat.h"
++#include "idlemsg.h"
++#include "global.h"
++
++/* UNIX socket variables */
++static int idle_sock = -1;
++static struct sockaddr_un idle_local;
++
++int idle_make_server_address(struct sockaddr_un *sun)
++{
++    const char *idle_sock;
++
++    memset(sun, 0, sizeof(*sun));
++    sun->sun_family = AF_UNIX;
++    idle_sock = config_getstring(IMAPOPT_IDLESOCKET);
++    if (idle_sock) {
++	strlcpy(sun->sun_path, idle_sock, sizeof(sun->sun_path));
++    }
++    else {
++	/* TODO: detect overflow and fail */
++	strlcpy(sun->sun_path, config_dir, sizeof(sun->sun_path));
++	strlcat(sun->sun_path, FNAME_IDLE_SOCK, sizeof(sun->sun_path));
++    }
++    return 1;
++}
++
++
++int idle_make_client_address(struct sockaddr_un *sun)
++{
++    memset(sun, 0, sizeof(*sun));
++    sun->sun_family = AF_UNIX;
++    /* TODO: detect overflow and fail */
++    snprintf(sun->sun_path, sizeof(sun->sun_path), "%s%s/idle.%d",
++	     config_dir, FNAME_IDLE_SOCK_DIR, (int)getpid());
++    return 1;
++}
++
++/* Extract an identifying string from the remote AF_UNIX address,
++ * suitable for logging debug messages.  Returns a string into an
++ * internal buffer */
++const char *idle_id_from_addr(const struct sockaddr_un *sun)
++{
++    const char *tail = strrchr(sun->sun_path, '/');
++    const char *p;
++    /* Has to be an absolute path, so there must be at least 1 / */
++    assert(tail);
++    tail++;
++    p = strchr(tail, '.');
++    return (p ? p+1 : tail);
++}
++
++
++
++int idle_init_sock(const struct sockaddr_un *local)
++{
++    int len;
++    int s;
++    mode_t oldumask;
++
++    /* create socket we are going to use for listening */
++    if ((s = socket(AF_UNIX, SOCK_DGRAM, 0)) == -1) {
++	perror("socket");
++	return 0;
++    }
++
++    /* bind it to a local file */
++    unlink(local->sun_path);
++    len = sizeof(local->sun_family) + strlen(local->sun_path) + 1;
++
++    oldumask = umask((mode_t) 0); /* for Linux */
++
++    if (bind(s, (struct sockaddr *)local, len) == -1) {
++	perror("bind");
++	close(s);
++	return 0;
++    }
++    umask(oldumask); /* for Linux */
++    chmod(local->sun_path, 0777); /* for DUX */
++
++    idle_sock = s;
++    idle_local = *local;
++
++    return 1;
++}
++
++void idle_done_sock(void)
++{
++    if (idle_sock >= 0) {
++	close(idle_sock);
++	unlink(idle_local.sun_path);
++    }
++    idle_sock = -1;
++}
++
++int idle_get_sock(void)
++{
++    return idle_sock;
++}
++
++/*
++ * Send a message to idled
++ */
++int idle_send(const struct sockaddr_un *remote,
++	      const idle_message_t *msg)
++{
++    if (idle_sock < 0)
++	return 0;
++
++    if (sendto(idle_sock, (void *) msg,
++	       IDLE_MESSAGE_BASE_SIZE+strlen(msg->mboxname)+1, /* 1 for NULL */
++	       0, (struct sockaddr *) remote, sizeof(*remote)) == -1) {
++	syslog(LOG_ERR, "error sending to idled: %lx", msg->which);
++	return 0;
++    }
++
++    return 1;
++}
++
++int idle_recv(struct sockaddr_un *remote, idle_message_t *msg)
++{
++    socklen_t remote_len = sizeof(*remote);
++    int n;
++
++    if (idle_sock < 0)
++	return 0;
++
++    memset(remote, 0, remote_len);
++    n = recvfrom(idle_sock, (void *) msg, sizeof(idle_message_t), 0,
++		 (struct sockaddr *) remote, &remote_len);
++
++    if (n < 0)
++	return 0;
++
++    if (n <= IDLE_MESSAGE_BASE_SIZE ||
++	msg->mboxname[n - 1 - IDLE_MESSAGE_BASE_SIZE] != '\0') {
++	syslog(LOG_ERR, "Invalid message received, size=%d\n", n);
++	return 0;
++    }
++
++    return 1;
++}
++
+diff -up cyrus-imapd-2.3.16/imap/idlemsg.h.idledfix cyrus-imapd-2.3.16/imap/idlemsg.h
+--- cyrus-imapd-2.3.16/imap/idlemsg.h.idledfix	2012-03-28 16:34:37.397927095 +0200
++++ cyrus-imapd-2.3.16/imap/idlemsg.h	2012-03-28 16:34:37.397927095 +0200
+@@ -0,0 +1,87 @@
++/* idled.h - daemon for handling IMAP IDLE notifications
++ *
++ * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. The name "Carnegie Mellon University" must not be used to
++ *    endorse or promote products derived from this software without
++ *    prior written permission. For permission or any legal
++ *    details, please contact
++ *      Carnegie Mellon University
++ *      Center for Technology Transfer and Enterprise Creation
++ *      4615 Forbes Avenue
++ *      Suite 302
++ *      Pittsburgh, PA  15213
++ *      (412) 268-7393, fax: (412) 268-7395
++ *      innovation@andrew.cmu.edu
++ *
++ * 4. Redistributions of any form whatsoever must retain the following
++ *    acknowledgment:
++ *    "This product includes software developed by Computing Services
++ *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
++ *
++ * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
++ * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
++ * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
++ * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
++ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
++ * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
++ * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
++ *
++ * $Id: idled.h,v 1.9 2010/01/06 17:01:32 murch Exp $
++ */
++
++#ifndef IDLEMSG_H
++#define IDLEMSG_H
++
++#include <sys/socket.h>
++#include <sys/un.h>
++#include "mailbox.h"
++
++/* socket to communicate with the idled */
++#define FNAME_IDLE_SOCK_DIR "/socket"
++#define FNAME_IDLE_SOCK FNAME_IDLE_SOCK_DIR"/idle"
++
++typedef struct idle_message_s idle_message_t;
++
++struct idle_message_s
++{
++    unsigned long which;
++
++    /* 1 for null. leave at end of structure for alignment */
++    char mboxname[MAX_MAILBOX_BUFFER];
++};
++
++#define IDLE_MESSAGE_BASE_SIZE	(1 * (int) sizeof(unsigned long))
++
++enum {
++    IDLE_MSG_INIT,
++    IDLE_MSG_DONE,
++    IDLE_MSG_NOTIFY,
++    IDLE_MSG_NOOP,
++    IDLE_MSG_ALERT
++};
++
++int idle_make_server_address(struct sockaddr_un *);
++int idle_make_client_address(struct sockaddr_un *);
++const char *idle_id_from_addr(const struct sockaddr_un *);
++int idle_init_sock(const struct sockaddr_un *);
++void idle_done_sock(void);
++int idle_get_sock(void);
++int idle_send(const struct sockaddr_un *remote,
++	      const idle_message_t *msg);
++int idle_recv(struct sockaddr_un *remote, idle_message_t *msg);
++
++
++#endif
+diff -up cyrus-imapd-2.3.16/imap/imapd.c.idledfix cyrus-imapd-2.3.16/imap/imapd.c
+--- cyrus-imapd-2.3.16/imap/imapd.c.idledfix	2012-03-28 16:34:37.377926927 +0200
++++ cyrus-imapd-2.3.16/imap/imapd.c	2012-03-28 16:53:02.496009895 +0200
+@@ -117,7 +117,6 @@ extern char *optarg;
+ /* global state */
+ const int config_need_data = CONFIG_NEED_PARTITION_DATA;
+ 
+-static char shutdownfilename[MAX_MAILBOX_PATH+1];
+ static int imaps = 0;
+ static sasl_ssf_t extprops_ssf = 0;
+ static int nosaslpasswdcheck = 0;
+@@ -260,7 +259,6 @@ extern void id_getcmdline(int argc, char
+ extern void id_response(struct protstream *pout);
+ 
+ void cmd_idle(char* tag);
+-void idle_update(idle_flags_t flags);
+ 
+ void cmd_starttls(char *tag, int imaps);
+ 
+@@ -637,9 +635,8 @@ static void imapd_reset(void)
+  */
+ int service_init(int argc, char **argv, char **envp)
+ {
+-    int ret;
+     int opt;
+-    
++
+     if (geteuid() == 0) fatal("must run as the Cyrus user", EC_USAGE);
+     setproctitle_init(argc, argv, envp);
+ 
+@@ -650,14 +647,6 @@ int service_init(int argc, char **argv,
+     /* load the SASL plugins */
+     global_sasl_init(1, 1, mysasl_cb);
+ 
+-    ret = snprintf(shutdownfilename, sizeof(shutdownfilename),
+-		   "%s/msg/shutdown", config_dir);
+-    
+-    if(ret < 0 || ret >= (int) sizeof(shutdownfilename)) {
+-       fatal("shutdownfilename buffer too small (configdirectory too long)",
+-	     EC_CONFIG);
+-    }
+-
+     /* open the mboxlist, we'll need it for real work */
+     mboxlist_init(0);
+     mboxlist_open(NULL);
+@@ -2585,16 +2574,11 @@ void cmd_id(char *tag)
+ void cmd_idle(char *tag)
+ {
+     int c = EOF;
++    int flags;
+     static struct buf arg;
+     static int idle_period = -1;
+ 
+     if (!backend_current) {  /* Local mailbox */
+-	/* Setup for doing mailbox updates */
+-	if (!idle_init(idle_update)) {
+-	    prot_printf(imapd_out, 
+-			"%s NO cannot start idling\r\n", tag);
+-	    return;
+-	}
+ 
+ 	/* Tell client we are idling and waiting for end of command */
+ 	prot_printf(imapd_out, "+ idling\r\n");
+@@ -2607,8 +2591,32 @@ void cmd_idle(char *tag)
+ 	 * connection abort we tell idled about it */
+ 	idling = 1;
+ 
+-	/* Get continuation data */
+-	c = getword(imapd_in, &arg);
++	while ((flags = idle_wait(imapd_in->fd))) {
++	    if (flags & IDLE_INPUT) {
++		/* Get continuation data */
++		c = getword(imapd_in, &arg);
++		break;
++	    }
++
++	    /* Send unsolicited untagged responses to the client */
++	    if ((flags & IDLE_MAILBOX) && imapd_mailbox)
++		index_check(imapd_mailbox, 0, 1);
++
++	    if (flags & IDLE_ALERT) {
++		char shut[MAX_MAILBOX_PATH+1];
++		if (! imapd_userisadmin &&
++		    (shutdown_file(shut, sizeof(shut)) ||
++		     (imapd_userid && 
++		      !access_ok(imapd_userid, config_ident, shut, sizeof(shut))))) {
++		    char *p;
++		    for (p = shut; *p == '['; p++); /* can't have [ be first char */
++		    prot_printf(imapd_out, "* BYE [ALERT] %s\r\n", p);
++		    shut_down(0);
++		}
++	    }
++
++	    prot_flush(imapd_out);
++	}
+ 
+ 	/* Stop updates and do any necessary cleanup */
+ 	idling = 0;
+@@ -2704,27 +2712,6 @@ void cmd_idle(char *tag)
+     }
+ }
+ 
+-/* Send unsolicited untagged responses to the client */
+-void idle_update(idle_flags_t flags)
+-{
+-    if ((flags & IDLE_MAILBOX) && imapd_mailbox)
+-	index_check(imapd_mailbox, 0, 1);
+-
+-    if (flags & IDLE_ALERT) {
+-	char shut[MAX_MAILBOX_PATH+1];
+-	if (! imapd_userisadmin &&
+-	    (shutdown_file(shut, sizeof(shut)) ||
+-	     (imapd_userid && 
+-	      !access_ok(imapd_userid, config_ident, shut, sizeof(shut))))) {
+-	    char *p;
+-	    for (p = shut; *p == '['; p++); /* can't have [ be first char */
+-	    prot_printf(imapd_out, "* BYE [ALERT] %s\r\n", p);
+-	    shut_down(0);
+-	}
+-    }
+-
+-    prot_flush(imapd_out);
+-}
+ 
+ void capa_response(int flags)
+ {
+diff -up cyrus-imapd-2.3.16/imap/Makefile.in.idledfix cyrus-imapd-2.3.16/imap/Makefile.in
+--- cyrus-imapd-2.3.16/imap/Makefile.in.idledfix	2012-03-28 16:34:37.341926624 +0200
++++ cyrus-imapd-2.3.16/imap/Makefile.in	2012-03-28 16:34:37.401927130 +0200
+@@ -100,7 +100,7 @@ LOBJS= append.o mailbox.o mboxlist.o mup
+ 	global.o imap_err.o mupdate_err.o proc.o setproctitle.o \
+ 	convert_code.o duplicate.o saslclient.o saslserver.o signals.o \
+ 	annotate.o search_engines.o squat.o squat_internal.o mbdump.o \
+-	imapparse.o telemetry.o user.o notify.o idle.o quota_db.o \
++	imapparse.o telemetry.o user.o notify.o idle.o idlemsg.o quota_db.o \
+ 	sync_log.o autosieve.o $(SEEN) mboxkey.o backend.o tls.o message_guid.o \
+ 	statuscache_db.o
+ 
+@@ -183,9 +183,9 @@ mupdate_err.c: mupdate_err.et
+ mupdate_err.h: mupdate_err.c
+ 
+ ### Services
+-idled: idled.o mutex_fake.o libimap.a $(SIEVE_LIBS) $(DEPLIBS)
++idled: idled.o idlemsg.o mutex_fake.o libimap.a $(SIEVE_LIBS) $(DEPLIBS)
+ 	$(CC) $(LDFLAGS) -o idled \
+-	 idled.o mutex_fake.o libimap.a $(SIEVE_LIBS) $(DEPLIBS) $(LIBS)
++	 idled.o idlemsg.o mutex_fake.o libimap.a $(SIEVE_LIBS) $(DEPLIBS) $(LIBS)
+ 
+ lmtpd: lmtpd.o proxy.o $(LMTPOBJS) $(SIEVE_OBJS) mutex_fake.o \
+ 	 libimap.a $(SIEVE_LIBS) $(DEPLIBS) $(SERVICE)
+diff -up cyrus-imapd-2.3.16/lib/util.h.idledfix cyrus-imapd-2.3.16/lib/util.h
+--- cyrus-imapd-2.3.16/lib/util.h.idledfix	2012-03-28 16:57:33.286170377 +0200
++++ cyrus-imapd-2.3.16/lib/util.h	2012-03-28 16:57:33.302170504 +0200
+@@ -64,6 +64,13 @@ extern const unsigned char convert_to_up
+ #define TOUPPER(c) (convert_to_uppercase[(unsigned char)(c)])
+ #define TOLOWER(c) (convert_to_lowercase[(unsigned char)(c)])
+ 
++#ifndef MAX
++#define MAX(x, y) ((x) > (y) ? (x) : (y))
++#endif
++#ifndef MIN
++#define MIN(x, y) ((x) < (y) ? (x) : (y))
++#endif
++
+ typedef struct keyvalue {
+     char *key, *value;
+ } keyvalue;
+diff -Naurp cyrus-imapd-2.3.16.orig/imap/idled.h cyrus-imapd-2.3.16/imap/idled.h
+--- cyrus-imapd-2.3.16.orig/imap/idled.h	2009-02-09 06:01:56.000000000 +0100
++++ cyrus-imapd-2.3.16/imap/idled.h	1970-01-01 01:00:00.000000000 +0100
+@@ -1,70 +0,0 @@
+-/* idled.h - daemon for handling IMAP IDLE notifications
+- *
+- * Copyright (c) 1994-2008 Carnegie Mellon University.  All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- *
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer.
+- *
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in
+- *    the documentation and/or other materials provided with the
+- *    distribution.
+- *
+- * 3. The name "Carnegie Mellon University" must not be used to
+- *    endorse or promote products derived from this software without
+- *    prior written permission. For permission or any legal
+- *    details, please contact
+- *      Carnegie Mellon University
+- *      Center for Technology Transfer and Enterprise Creation
+- *      4615 Forbes Avenue
+- *      Suite 302
+- *      Pittsburgh, PA  15213
+- *      (412) 268-7393, fax: (412) 268-7395
+- *      innovation@andrew.cmu.edu
+- *
+- * 4. Redistributions of any form whatsoever must retain the following
+- *    acknowledgment:
+- *    "This product includes software developed by Computing Services
+- *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
+- *
+- * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
+- * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+- * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
+- * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+- * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
+- * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+- *
+- * $Id: idled.h,v 1.8 2009/02/09 05:01:56 brong Exp $
+- */
+-
+-#ifndef IDLED_H
+-#define IDLED_H
+-
+-#include "mailbox.h"
+-
+-/* socket to communicate with the idled */
+-#define FNAME_IDLE_SOCK "/socket/idle"
+-
+-typedef struct idle_data_s {
+-    unsigned long msg;
+-    unsigned long pid;
+-
+-    /* 1 for null. leave at end of structure for alignment */
+-    char mboxname[MAX_MAILBOX_BUFFER];
+-} idle_data_t;
+-
+-#define IDLEDATA_BASE_SIZE	(2 * (int) sizeof(unsigned long))
+-
+-typedef enum {
+-    IDLE_INIT,
+-    IDLE_DONE,
+-    IDLE_NOTIFY,
+-    IDLE_NOOP
+-} idle_msg_t;
+-
+-#endif
+

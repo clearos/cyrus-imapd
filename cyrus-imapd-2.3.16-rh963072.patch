@@ -1,0 +1,29 @@
+diff -up cyrus-imapd-2.3.16/imap/imapd.c.original cyrus-imapd-2.3.16/imap/imapd.c
+--- cyrus-imapd-2.3.16/imap/imapd.c.original	2013-05-15 11:00:43.564819604 +0900
++++ cyrus-imapd-2.3.16/imap/imapd.c	2013-05-15 11:52:15.670819721 +0900
+@@ -2591,12 +2591,24 @@ void cmd_idle(char *tag)
+ 	 * connection abort we tell idled about it */
+ 	idling = 1;
+ 
++	prot_resettimeout(imapd_in);
+ 	while ((flags = idle_wait(imapd_in->fd))) {
++	    int now = time(NULL);
++
+ 	    if (flags & IDLE_INPUT) {
+ 		/* Get continuation data */
+ 		c = getword(imapd_in, &arg);
+ 		break;
+ 	    }
++	    else {
++		if (now >= imapd_in->timeout_mark) {
++		    if (!imapd_in->dontblock) {
++			imapd_in->error = xstrdup("idle for too long");
++			c = EOF;
++			break;
++		    }
++		}
++	    }
+ 
+ 	    /* Send unsolicited untagged responses to the client */
+ 	    if ((flags & IDLE_MAILBOX) && imapd_mailbox)
+

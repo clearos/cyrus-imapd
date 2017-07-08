@@ -1,0 +1,13 @@
+diff -up cyrus-imapd-2.3.16/imap/nntpd.c.cve-2011-3208 cyrus-imapd-2.3.16/imap/nntpd.c
+--- cyrus-imapd-2.3.16/imap/nntpd.c.cve-2011-3208	2011-09-06 20:20:35.603632336 +0200
++++ cyrus-imapd-2.3.16/imap/nntpd.c	2011-09-06 20:20:38.931657996 +0200
+@@ -4168,7 +4168,8 @@ static struct wildmat *split_wildmats(ch
+ 	else if (*c == '@') wild[n].not = -1;	/* absolute not (feeding) */
+ 	else wild[n].not = 0;
+ 
+-	strcpy(p, wild[n].not ? c + 1 : c);
++        strncpy(p, wild[n].not ? c + 1 : c, pattern+sizeof(pattern) - p);
++        pattern[sizeof(pattern)-1] = '\0';
+ 	wild[n++].pat = xstrdup(pattern);
+     } while (c != str);
+     wild[n].pat = NULL;

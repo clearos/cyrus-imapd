@@ -1,0 +1,140 @@
+From 99e184a903e4f973c7358bc0c7e26fabb2237fd2 Mon Sep 17 00:00:00 2001
+From: Ken Murchison <murch@andrew.cmu.edu>
+Date: Fri, 25 Mar 2011 15:50:18 +0000
+Subject: Fixed bug #3423 - STARTTLS plaintext command injection vulnerability
+
+---
+diff --git a/imap/imapd.c b/imap/imapd.c
+index 4227d6e..f9905ae 100644
+--- a/imap/imapd.c
++++ b/imap/imapd.c
+@@ -1688,6 +1688,9 @@ void cmdloop()
+ 		if (c == '\r') c = prot_getc(imapd_in);
+ 		if (c != '\n') goto extraargs;
+ 
++		/* XXX  discard any input pipelined after STARTTLS */
++		prot_flush(imapd_in);
++
+ 		/* if we've already done SASL fail */
+ 		if (imapd_userid != NULL) {
+ 		    prot_printf(imapd_out, 
+diff --git a/imap/lmtpengine.c b/imap/lmtpengine.c
+index eff3e50..16ccc54 100644
+--- a/imap/lmtpengine.c
++++ b/imap/lmtpengine.c
+@@ -1562,6 +1562,9 @@ void lmtpmode(struct lmtp_func *func,
+ 		sasl_ssf_t ssf;
+ 		char *auth_id;
+ 
++		/* XXX  discard any input pipelined after STARTTLS */
++		prot_flush(pin);
++
+ 		/* SASL and openssl have different ideas
+ 		   about whether ssf is signed */
+ 		layerp = (int *) &ssf;
+diff --git a/imap/mupdate.c b/imap/mupdate.c
+index b6cc1cb..a4f6509 100644
+--- a/imap/mupdate.c
++++ b/imap/mupdate.c
+@@ -927,6 +927,9 @@ mupdate_docmd_result_t docmd(struct conn *c)
+ 	if (!strcmp(c->cmd.s, "Starttls")) {
+ 	    CHECKNEWLINE(c, ch);
+ 	    
++	    /* XXX  discard any input pipelined after STARTTLS */
++	    prot_flush(c->pin);
++
+ 	    if (!tls_enabled()) {
+ 		/* we don't support starttls */
+ 		goto badcmd;
+diff --git a/imap/nntpd.c b/imap/nntpd.c
+index 1c9dbb1..105fa4b 100644
+--- a/imap/nntpd.c
++++ b/imap/nntpd.c
+@@ -1428,6 +1428,9 @@ static void cmdloop(void)
+ 		if (c == '\r') c = prot_getc(nntp_in);
+ 		if (c != '\n') goto extraargs;
+ 
++		/* XXX  discard any input pipelined after STARTTLS */
++		prot_flush(nntp_in);
++
+ 		cmd_starttls(0);
+ 	    }
+ 	    else if (!strcmp(cmd.s, "Stat")) {
+diff --git a/imap/pop3d.c b/imap/pop3d.c
+index b84ca2e..7303771 100644
+--- a/imap/pop3d.c
++++ b/imap/pop3d.c
+@@ -930,6 +930,9 @@ static void cmdloop(void)
+ 		if (arg) {
+ 		    prot_printf(popd_out, "-ERR Unexpected extra argument\r\n");
+ 		} else {
++		    /* XXX  discard any input pipelined after STLS */
++		    prot_flush(popd_in);
++
+ 		    cmd_starttls(0);
+ 		}
+ 	    }
+diff --git a/imap/sync_server.c b/imap/sync_server.c
+index b2f0a7b..b8b4263 100644
+--- a/imap/sync_server.c
++++ b/imap/sync_server.c
+@@ -904,6 +904,9 @@ static void cmdloop(void)
+ 		if (c == '\r') c = prot_getc(sync_in);
+ 		if (c != '\n') goto extraargs;
+ 
++		/* XXX  discard any input pipelined after STARTTLS */
++		prot_flush(sync_in);
++
+ 		/* if we've already done SASL fail */
+ 		if (sync_userid != NULL) {
+ 		    prot_printf(sync_out, 
+diff --git a/lib/prot.c b/lib/prot.c
+index 4fef8e3..c2bb1a9 100644
+--- a/lib/prot.c
++++ b/lib/prot.c
+@@ -728,10 +728,29 @@ int prot_fill(struct protstream *s)
+ }
+ 
+ /*
++ * If 's' is an input stream, discard any pending/buffered data.  Otherwise,
+  * Write out any buffered data in the stream 's'
+  */
+ int prot_flush(struct protstream *s) 
+ {
++    if (!s->write) {
++	int c, save_dontblock = s->dontblock;
++
++	/* Set stream to nonblocking mode */
++	if (!save_dontblock) nonblock(s->fd, (s->dontblock = 1));
++
++	/* Ingest any pending input */
++	while ((c = prot_fill(s)) != EOF);
++
++	/* Reset stream to previous blocking mode */
++	if (!save_dontblock) nonblock(s->fd, (s->dontblock = 0));
++
++	/* Discard any buffered input */
++	s->cnt = 0;
++
++	return 0;
++    }
++
+     return prot_flush_internal(s, 1);
+ }
+ 
+diff --git a/timsieved/parser.c b/timsieved/parser.c
+index 49b2881..dc710c0 100644
+--- a/timsieved/parser.c
++++ b/timsieved/parser.c
+@@ -443,6 +443,9 @@ int parser(struct protstream *sieved_out, struct protstream *sieved_in)
+       goto error;
+     }
+ 
++    /* XXX  discard any input pipelined after STARTTLS */
++    prot_flush(sieved_in);
++
+     if(referral_host)
+ 	goto do_referral;
+ 
+--
+cgit v0.8.2.1
